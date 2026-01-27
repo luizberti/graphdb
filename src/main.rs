@@ -3,6 +3,8 @@
 //! pointer chasing. Uses compound terms with fixed-size argument arrays.
 
 pub mod edn;
+pub mod txn;
+pub mod ulid;
 
 use differential_dataflow::input::Input;
 use differential_dataflow::operators::Threshold;

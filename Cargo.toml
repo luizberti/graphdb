@@ -7,8 +7,11 @@ version = "0.1.0"
 thiserror = "2"
 miette = { version = "7.6.0", features = ["fancy"] }
 serde = { version = "1", features = ["derive"] }
+crossterm = "0.29.0"
 
 timely = "0.25.1"
 differential-dataflow = "0.18.0"
 differential-dogs3 = "0.18.0"
 duckdb = "1.4.4"
+blake3 = "1.8.3"
+bao = "0.13.1"

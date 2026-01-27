@@ -3,6 +3,7 @@
 //! pointer chasing. Uses compound terms with fixed-size argument arrays.
 
 pub mod edn;
+pub mod repl;
 pub mod txn;
 pub mod ulid;
 
@@ -610,18 +611,37 @@ fn run_datalog_example() {
 
 fn main() -> miette::Result<()> {
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║     MicroKanren with Differential Dataflow               ║");
+    println!("║        MicroKanren with Differential Dataflow            ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
-    run_simple_unification();
-    println!("\n{}\n", "─".repeat(60));
-    run_compound_goals();
-    println!("\n{}\n", "─".repeat(60));
-    run_ancestor_dataflow();
-    println!("\n{}\n", "─".repeat(60));
-    run_path_finding();
-    println!("\n{}\n", "─".repeat(60));
-    run_datalog_example();
+    let mut repl = repl::Repl::new();
+    repl.run(|line| {
+        match line {
+            "quit" | "exit" => return false,
+            "demo" => {
+                run_simple_unification();
+                println!("\n{}\n", "─".repeat(60));
+                run_compound_goals();
+                println!("\n{}\n", "─".repeat(60));
+                run_ancestor_dataflow();
+                println!("\n{}\n", "─".repeat(60));
+                run_path_finding();
+                println!("\n{}\n", "─".repeat(60));
+                run_datalog_example();
+            }
+            _ => match txn::Transaction::parse(line) {
+                Ok(txn) => {
+                    for (datom, diff) in txn.as_diffs() {
+                        let op = if diff > 0 { "+" } else { "-" };
+                        println!("{} {:?}", op, datom);
+                    }
+                }
+                Err(e) => println!("error: {}", e),
+            },
+        }
+        true
+    })
+    .expect("repl error");
 
     Ok(())
 }

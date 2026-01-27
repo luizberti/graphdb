@@ -4,8 +4,11 @@ edition = "2024"
 version = "0.1.0"
 
 [dependencies]
+thiserror = "2"
+miette = { version = "7.6.0", features = ["fancy"] }
+serde = { version = "1", features = ["derive"] }
+
 timely = "0.25.1"
 differential-dataflow = "0.18.0"
 differential-dogs3 = "0.18.0"
-miette = { version = "7.6.0", features = ["fancy"] }
-serde = { version = "1", features = ["derive"] }
+duckdb = "1.4.4"

@@ -2,6 +2,8 @@
 //! Terms are interned in a `TermStore` for efficient representation without
 //! pointer chasing. Uses compound terms with fixed-size argument arrays.
 
+pub mod edn;
+
 use differential_dataflow::input::Input;
 use differential_dataflow::operators::Threshold;
 use differential_dataflow::operators::iterate::Iterate;

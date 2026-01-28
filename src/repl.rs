@@ -1,4 +1,5 @@
-//! Interactive REPL using crossterm
+use std::collections::VecDeque;
+use std::io::{self, Write};
 
 use crossterm::{
     cursor::{self, MoveLeft, MoveRight, MoveToColumn},
@@ -7,18 +8,15 @@ use crossterm::{
     style::Print,
     terminal::{self, Clear, ClearType},
 };
-use std::io::{self, Write};
 
 pub struct Repl {
-    history: Vec<String>,
-    history_idx: usize,
+    history: VecDeque<String>,
 }
 
 impl Repl {
     pub fn new() -> Self {
         Self {
-            history: Vec::new(),
-            history_idx: 0,
+            history: VecDeque::with_capacity(128),
         }
     }
 
@@ -43,7 +41,6 @@ impl Repl {
             stdout.flush()?;
 
             let Some(line) = self.read_line(&mut stdout)? else {
-                // Ctrl-D on empty line
                 execute!(stdout, Print("\r\n"))?;
                 break;
             };
@@ -53,13 +50,13 @@ impl Repl {
                 continue;
             }
 
-            // Add to history
-            if self.history.last().map(|s| s.as_str()) != Some(line) {
-                self.history.push(line.to_string());
+            if self.history.back().map(|s| s.as_str()) != Some(line) {
+                if self.history.len() == self.history.capacity() {
+                    self.history.pop_front();
+                }
+                self.history.push_back(line.to_string());
             }
-            self.history_idx = self.history.len();
 
-            // Handle command
             if !handler(line) {
                 break;
             }
@@ -71,7 +68,7 @@ impl Repl {
     fn read_line(&mut self, stdout: &mut io::Stdout) -> io::Result<Option<String>> {
         let mut buf = String::new();
         let mut cursor_pos: usize = 0;
-        let mut temp_history_idx = self.history_idx;
+        let mut history_offset: usize = 0; // 0 = current input, 1 = most recent, etc.
         let mut saved_input = String::new();
 
         loop {
@@ -251,8 +248,7 @@ impl Repl {
                     }
 
                     KeyEvent {
-                        code: KeyCode::End,
-                        ..
+                        code: KeyCode::End, ..
                     } => {
                         execute!(stdout, MoveToColumn((2 + buf.len()) as u16))?;
                         cursor_pos = buf.len();
@@ -261,12 +257,12 @@ impl Repl {
                     KeyEvent {
                         code: KeyCode::Up, ..
                     } => {
-                        if temp_history_idx > 0 {
-                            if temp_history_idx == self.history.len() {
+                        if history_offset < self.history.len() {
+                            if history_offset == 0 {
                                 saved_input = buf.clone();
                             }
-                            temp_history_idx -= 1;
-                            buf = self.history[temp_history_idx].clone();
+                            history_offset += 1;
+                            buf = self.history[self.history.len() - history_offset].clone();
                             cursor_pos = buf.len();
                             self.redraw_line(stdout, &buf, cursor_pos)?;
                         }
@@ -276,12 +272,12 @@ impl Repl {
                         code: KeyCode::Down,
                         ..
                     } => {
-                        if temp_history_idx < self.history.len() {
-                            temp_history_idx += 1;
-                            buf = if temp_history_idx == self.history.len() {
+                        if history_offset > 0 {
+                            history_offset -= 1;
+                            buf = if history_offset == 0 {
                                 saved_input.clone()
                             } else {
-                                self.history[temp_history_idx].clone()
+                                self.history[self.history.len() - history_offset].clone()
                             };
                             cursor_pos = buf.len();
                             self.redraw_line(stdout, &buf, cursor_pos)?;
@@ -295,12 +291,7 @@ impl Repl {
         }
     }
 
-    fn redraw_line(
-        &self,
-        stdout: &mut io::Stdout,
-        buf: &str,
-        cursor_pos: usize,
-    ) -> io::Result<()> {
+    fn redraw_line(&self, stdout: &mut io::Stdout, buf: &str, cursor_pos: usize) -> io::Result<()> {
         execute!(
             stdout,
             MoveToColumn(2),

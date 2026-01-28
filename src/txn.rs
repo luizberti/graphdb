@@ -3,18 +3,32 @@
 //! Entities and attributes share a u128 key space (ULIDs).
 //!
 //! ```edn
-//! [:assert #id "01ABC..." #id "01DEF..." "Alice"]
-//! [:assert #id "01ABC..." #id "01GHI..." 30]
+//! [:assert #id "01ABC..." :person/name "Alice"]
+//! [:assert #id "01ABC..." :person/age 30]
 //! ```
 
+use crate::attr::AttrStore;
 use crate::edn::{EDN, Parser};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Value {
     Ref(u128),
     Int(i128),
     Str(String),
     Bool(bool),
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Ref(id) => write!(f, "#ref {}", id),
+            Value::Int(n) => write!(f, "{}", n),
+            Value::Str(s) => write!(f, "\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            Value::Bool(b) => write!(f, "{}", b),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,22 +74,22 @@ pub enum TxnError {
 }
 
 impl Transaction {
-    pub fn parse(input: &str) -> Result<Self, TxnError> {
+    pub fn parse(input: &str, attrs: &mut AttrStore) -> Result<Self, TxnError> {
         let ops_edn = Parser::new(input).parse_all()?;
         let mut ops = Vec::with_capacity(ops_edn.len());
 
         for op_edn in &ops_edn {
-            ops.push(parse_op(op_edn)?);
+            ops.push(parse_op(op_edn, attrs)?);
         }
 
         Ok(Transaction { ops })
     }
 
-    pub fn from_edn(ops_edn: &[EDN]) -> Result<Self, TxnError> {
+    pub fn from_edn(ops_edn: &[EDN], attrs: &mut AttrStore) -> Result<Self, TxnError> {
         let mut ops = Vec::with_capacity(ops_edn.len());
 
         for op_edn in ops_edn {
-            ops.push(parse_op(op_edn)?);
+            ops.push(parse_op(op_edn, attrs)?);
         }
 
         Ok(Transaction { ops })
@@ -91,7 +105,7 @@ impl Transaction {
     }
 }
 
-fn parse_op(edn: &EDN) -> Result<Op, TxnError> {
+fn parse_op(edn: &EDN, attrs: &mut AttrStore) -> Result<Op, TxnError> {
     let items = edn
         .as_vector()
         .ok_or_else(|| TxnError::Invalid("operation must be a vector".into()))?;
@@ -113,9 +127,9 @@ fn parse_op(edn: &EDN) -> Result<Op, TxnError> {
         }
     };
 
-    let entity = parse_id(&items[1])?;
-    let attribute = parse_id(&items[2])?;
-    let value = parse_value(&items[3])?;
+    let entity = parse_id(&items[1], attrs)?;
+    let attribute = parse_id(&items[2], attrs)?;
+    let value = parse_value(&items[3], attrs)?;
 
     let datom = Datom {
         e: entity,
@@ -133,8 +147,17 @@ fn parse_op(edn: &EDN) -> Result<Op, TxnError> {
     }
 }
 
-fn parse_id(edn: &EDN) -> Result<u128, TxnError> {
+fn parse_id(edn: &EDN, attrs: &mut AttrStore) -> Result<u128, TxnError> {
     match edn {
+        // Keyword attribute (e.g., :person/name)
+        EDN::Keyword(ns, name) => {
+            let ident = match ns {
+                Some(n) => format!("{}/{}", n, name),
+                None => name.clone(),
+            };
+            Ok(attrs.resolve(&ident))
+        }
+
         // Direct integer (for small test values)
         EDN::Int(n) if *n >= 0 => Ok(*n as u128),
 
@@ -153,12 +176,12 @@ fn parse_id(edn: &EDN) -> Result<u128, TxnError> {
             .map_err(|_| TxnError::Invalid(format!("invalid bigint id: {}", s))),
 
         _ => Err(TxnError::Invalid(
-            "id must be an integer, #id \"hex\", or bigintN".into(),
+            "id must be an integer, #id \"hex\", keyword, or bigintN".into(),
         )),
     }
 }
 
-fn parse_value(edn: &EDN) -> Result<Value, TxnError> {
+fn parse_value(edn: &EDN, attrs: &mut AttrStore) -> Result<Value, TxnError> {
     match edn {
         EDN::Int(n) => Ok(Value::Int(*n as i128)),
         EDN::String(s) => Ok(Value::Str(s.clone())),
@@ -174,7 +197,7 @@ fn parse_value(edn: &EDN) -> Result<Value, TxnError> {
 
         // Reference to another entity
         EDN::Tagged(tag, inner) if tag == "ref" || tag == "id" => {
-            let id = parse_id(inner)?;
+            let id = parse_id(inner, attrs)?;
             Ok(Value::Ref(id))
         }
 
@@ -191,7 +214,8 @@ mod tests {
 
     #[test]
     fn test_parse_assert_with_ints() {
-        let txn = Transaction::parse(r#"[:assert 42 100 "Alice"]"#).unwrap();
+        let mut attrs = AttrStore::new();
+        let txn = Transaction::parse(r#"[:assert 42 100 "Alice"]"#, &mut attrs).unwrap();
         assert_eq!(txn.ops.len(), 1);
         match &txn.ops[0] {
             Op::Assert(d) => {
@@ -205,7 +229,8 @@ mod tests {
 
     #[test]
     fn test_parse_with_tagged_ids() {
-        let txn = Transaction::parse(r#"[:assert #id "2a" #id "ff" "Alice"]"#).unwrap();
+        let mut attrs = AttrStore::new();
+        let txn = Transaction::parse(r#"[:assert #id "2a" #id "ff" "Alice"]"#, &mut attrs).unwrap();
         match &txn.ops[0] {
             Op::Assert(d) => {
                 assert_eq!(d.e, 0x2a);
@@ -217,7 +242,8 @@ mod tests {
 
     #[test]
     fn test_parse_retract() {
-        let txn = Transaction::parse(r#"[:retract 42 200 30]"#).unwrap();
+        let mut attrs = AttrStore::new();
+        let txn = Transaction::parse(r#"[:retract 42 200 30]"#, &mut attrs).unwrap();
         assert_eq!(txn.ops.len(), 1);
         match &txn.ops[0] {
             Op::Retract(d) => {
@@ -231,11 +257,13 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_ops() {
+        let mut attrs = AttrStore::new();
         let txn = Transaction::parse(
             r#"[:assert 1 100 "Alice"]
                [:assert 1 101 30]
                [:assert 2 100 "Bob"]
                [:retract 1 101 30]"#,
+            &mut attrs,
         )
         .unwrap();
         assert_eq!(txn.ops.len(), 4);
@@ -243,16 +271,19 @@ mod tests {
 
     #[test]
     fn test_short_syntax() {
-        let txn = Transaction::parse(r#"[:+ 1 2 10] [:- 1 2 10]"#).unwrap();
+        let mut attrs = AttrStore::new();
+        let txn = Transaction::parse(r#"[:+ 1 2 10] [:- 1 2 10]"#, &mut attrs).unwrap();
         assert!(matches!(txn.ops[0], Op::Assert(_)));
         assert!(matches!(txn.ops[1], Op::Retract(_)));
     }
 
     #[test]
     fn test_diffs() {
+        let mut attrs = AttrStore::new();
         let txn = Transaction::parse(
             r#"[:assert 1 10 1]
                [:retract 2 20 2]"#,
+            &mut attrs,
         )
         .unwrap();
 
@@ -263,7 +294,8 @@ mod tests {
 
     #[test]
     fn test_bool_value() {
-        let txn = Transaction::parse(r#"[:assert 1 50 true]"#).unwrap();
+        let mut attrs = AttrStore::new();
+        let txn = Transaction::parse(r#"[:assert 1 50 true]"#, &mut attrs).unwrap();
         match &txn.ops[0] {
             Op::Assert(d) => assert_eq!(d.v, Value::Bool(true)),
             _ => panic!("expected assert"),
@@ -272,7 +304,8 @@ mod tests {
 
     #[test]
     fn test_ref_value() {
-        let txn = Transaction::parse(r#"[:assert 1 50 #ref #id "abc"]"#).unwrap();
+        let mut attrs = AttrStore::new();
+        let txn = Transaction::parse(r#"[:assert 1 50 #ref #id "abc"]"#, &mut attrs).unwrap();
         match &txn.ops[0] {
             Op::Assert(d) => assert_eq!(d.v, Value::Ref(0xabc)),
             _ => panic!("expected assert"),
@@ -281,9 +314,12 @@ mod tests {
 
     #[test]
     fn test_bigint_ids() {
-        let txn =
-            Transaction::parse(r#"[:assert 340282366920938463463374607431768211455N 1N "max"]"#)
-                .unwrap();
+        let mut attrs = AttrStore::new();
+        let txn = Transaction::parse(
+            r#"[:assert 340282366920938463463374607431768211455N 1N "max"]"#,
+            &mut attrs,
+        )
+        .unwrap();
         match &txn.ops[0] {
             Op::Assert(d) => {
                 assert_eq!(d.e, u128::MAX);
@@ -291,5 +327,36 @@ mod tests {
             }
             _ => panic!("expected assert"),
         }
+    }
+
+    #[test]
+    fn test_keyword_attrs() {
+        let mut attrs = AttrStore::new();
+        let txn = Transaction::parse(
+            r#"[:assert 1 :person/name "Alice"]
+               [:assert 1 :person/age 30]"#,
+            &mut attrs,
+        )
+        .unwrap();
+        assert_eq!(txn.ops.len(), 2);
+
+        // Both uses of :person/name should resolve to the same ID
+        let name_id = match &txn.ops[0] {
+            Op::Assert(d) => d.a,
+            _ => panic!("expected assert"),
+        };
+        let age_id = match &txn.ops[1] {
+            Op::Assert(d) => d.a,
+            _ => panic!("expected assert"),
+        };
+
+        // IDs should be different
+        assert_ne!(name_id, age_id);
+
+        // Lookup should work
+        assert!(attrs.lookup("person/name").is_some());
+        assert!(attrs.lookup("person/age").is_some());
+        assert_eq!(attrs.lookup("person/name").unwrap().ref_, name_id);
+        assert_eq!(attrs.lookup("person/age").unwrap().ref_, age_id);
     }
 }

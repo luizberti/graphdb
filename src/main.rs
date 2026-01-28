@@ -2,8 +2,11 @@
 //! Terms are interned in a `TermStore` for efficient representation without
 //! pointer chasing. Uses compound terms with fixed-size argument arrays.
 
+pub mod attr;
 pub mod edn;
+pub mod query;
 pub mod repl;
+pub mod store;
 pub mod txn;
 pub mod ulid;
 
@@ -609,39 +612,167 @@ fn run_datalog_example() {
     });
 }
 
+fn format_binding(var_name: &str, value: &txn::Value, attrs: &attr::AttrStore) -> String {
+    match value {
+        txn::Value::Ref(id) => {
+            if let Some(attr) = attrs.get(*id) {
+                format!("{}: :{}", var_name, attr.ident)
+            } else {
+                format!("{}: {}", var_name, value)
+            }
+        }
+        _ => format!("{}: {}", var_name, value),
+    }
+}
+
+fn print_query_result(q: &query::Query, result: query::QueryResult, attrs: &attr::AttrStore) {
+    match result {
+        query::QueryResult::Rows(rows) => {
+            if rows.is_empty() {
+                print!("(no results)\r\n");
+            } else {
+                for bindings in rows {
+                    let parts: Vec<_> = q
+                        .find
+                        .iter()
+                        .filter_map(|elem| {
+                            if let query::FindElem::Var(var) = elem {
+                                bindings.get(var).map(|v| {
+                                    format_binding(q.var_name(*var), v, attrs)
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    print!("{{{}}}\r\n", parts.join(", "));
+                }
+            }
+        }
+        query::QueryResult::Aggregated(aggs) => {
+            if aggs.is_empty() {
+                print!("(no results)\r\n");
+            } else {
+                let parts: Vec<_> = aggs
+                    .iter()
+                    .map(|(name, value)| format!("{}: {}", name, value))
+                    .collect();
+                print!("{{{}}}\r\n", parts.join(", "));
+            }
+        }
+    }
+}
+
 fn main() -> miette::Result<()> {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║        MicroKanren with Differential Dataflow            ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
-    let mut repl = repl::Repl::new();
-    repl.run(|line| {
-        match line {
-            "quit" | "exit" => return false,
-            "demo" => {
-                run_simple_unification();
-                println!("\n{}\n", "─".repeat(60));
-                run_compound_goals();
-                println!("\n{}\n", "─".repeat(60));
-                run_ancestor_dataflow();
-                println!("\n{}\n", "─".repeat(60));
-                run_path_finding();
-                println!("\n{}\n", "─".repeat(60));
-                run_datalog_example();
-            }
-            _ => match txn::Transaction::parse(line) {
-                Ok(txn) => {
-                    for (datom, diff) in txn.as_diffs() {
-                        let op = if diff > 0 { "+" } else { "-" };
-                        println!("{} {:?}", op, datom);
+    store::run(|store, worker| {
+        let mut repl = repl::Repl::new();
+
+        repl.run(|line| {
+            match line {
+                "quit" | "exit" => return false,
+                "demo" => {
+                    run_simple_unification();
+                    println!("\n{}\n", "─".repeat(60));
+                    run_compound_goals();
+                    println!("\n{}\n", "─".repeat(60));
+                    run_ancestor_dataflow();
+                    println!("\n{}\n", "─".repeat(60));
+                    run_path_finding();
+                    println!("\n{}\n", "─".repeat(60));
+                    run_datalog_example();
+                }
+                "dump" => {
+                    for (e, a, v) in store.all_datoms() {
+                        let attr_name = store.attrs.get(a)
+                            .map(|attr| format!(":{}", attr.ident))
+                            .unwrap_or_else(|| a.to_string());
+                        print!("[{} {} {}]\r\n", e, attr_name, v);
                     }
                 }
-                Err(e) => println!("error: {}", e),
-            },
-        }
-        true
-    })
-    .expect("repl error");
+                "drop" => {
+                    store.clear(worker);
+                    print!("cleared\r\n");
+                }
+                _ if line.starts_with("eval ") => {
+                    let path = line.strip_prefix("eval ").unwrap().trim();
+                    match std::fs::read_to_string(path) {
+                        Ok(contents) => {
+                            let mut parser = edn::Parser::new(&contents);
+                            match parser.parse_all() {
+                                Ok(exprs) => {
+                                    for expr in &exprs {
+                                        if query::is_query(expr) {
+                                            match query::Query::from_edn(expr, &store.attrs) {
+                                                Ok(q) => {
+                                                    let datoms = store.all_datoms();
+                                                    print_query_result(&q, q.execute(&datoms), &store.attrs);
+                                                }
+                                                Err(e) => print!("query error: {}\r\n", e),
+                                            }
+                                        } else {
+                                            match txn::Transaction::from_edn(&[expr.clone()], &mut store.attrs) {
+                                                Ok(txn) => {
+                                                    store.transact(&txn, worker);
+                                                    for (datom, diff) in txn.as_diffs() {
+                                                        let op = if diff > 0 { "+" } else { "-" };
+                                                        let attr_name = store.attrs.get(datom.a)
+                                                            .map(|a| format!(":{}", a.ident))
+                                                            .unwrap_or_else(|| datom.a.to_string());
+                                                        print!("{} [{} {} {}]\r\n", op, datom.e, attr_name, datom.v);
+                                                    }
+                                                }
+                                                Err(e) => print!("error: {}\r\n", e),
+                                            }
+                                        }
+                                    }
+                                    print!("loaded {} expressions\r\n", exprs.len());
+                                }
+                                Err(e) => print!("parse error: {}\r\n", e),
+                            }
+                        }
+                        Err(e) => print!("file error: {}\r\n", e),
+                    }
+                }
+                _ => {
+                    // Try to parse as EDN first to detect queries vs transactions
+                    let mut parser = edn::Parser::new(line);
+                    match parser.parse() {
+                        Ok(edn) if query::is_query(&edn) => {
+                            match query::Query::from_edn(&edn, &store.attrs) {
+                                Ok(q) => {
+                                    let datoms = store.all_datoms();
+                                    print_query_result(&q, q.execute(&datoms), &store.attrs);
+                                }
+                                Err(e) => print!("query error: {}\r\n", e),
+                            }
+                        }
+                        _ => {
+                            // Try as transaction
+                            match txn::Transaction::parse(line, &mut store.attrs) {
+                                Ok(txn) => {
+                                    store.transact(&txn, worker);
+                                    for (datom, diff) in txn.as_diffs() {
+                                        let op = if diff > 0 { "+" } else { "-" };
+                                        let attr_name = store.attrs.get(datom.a)
+                                            .map(|a| format!(":{}", a.ident))
+                                            .unwrap_or_else(|| datom.a.to_string());
+                                        print!("{} [{} {} {}]\r\n", op, datom.e, attr_name, datom.v);
+                                    }
+                                }
+                                Err(e) => print!("error: {}\r\n", e),
+                            }
+                        }
+                    }
+                }
+            }
+            true
+        })
+        .expect("repl error");
+    });
 
     Ok(())
 }

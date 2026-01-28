@@ -2,6 +2,8 @@
 //!
 //! Implements the EDN spec from https://github.com/edn-format/edn
 
+#![allow(unused_assignments)] // miette's #[label] macro triggers false positive
+
 use std::fmt;
 use std::hash::{Hash, Hasher};
 

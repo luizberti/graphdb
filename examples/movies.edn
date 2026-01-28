@@ -1,0 +1,54 @@
+; Directors
+[:+ 1 :person/name "Christopher Nolan"]
+[:+ 2 :person/name "Denis Villeneuve"]
+[:+ 3 :person/name "Ridley Scott"]
+
+; Actors
+[:+ 10 :person/name "Leonardo DiCaprio"]
+[:+ 11 :person/name "Timothée Chalamet"]
+[:+ 12 :person/name "Cillian Murphy"]
+[:+ 13 :person/name "Harrison Ford"]
+
+; Movies
+[:+ 100 :movie/title "Inception"]
+[:+ 100 :movie/year 2010]
+[:+ 100 :movie/director #ref 1]
+[:+ 100 :movie/cast #ref 10]
+[:+ 100 :movie/cast #ref 12]
+
+[:+ 101 :movie/title "Dune"]
+[:+ 101 :movie/year 2021]
+[:+ 101 :movie/director #ref 2]
+[:+ 101 :movie/cast #ref 11]
+
+[:+ 102 :movie/title "Oppenheimer"]
+[:+ 102 :movie/year 2023]
+[:+ 102 :movie/director #ref 1]
+[:+ 102 :movie/cast #ref 12]
+
+[:+ 103 :movie/title "Blade Runner"]
+[:+ 103 :movie/year 1982]
+[:+ 103 :movie/director #ref 3]
+[:+ 103 :movie/cast #ref 13]
+
+[:+ 104 :movie/title "Blade Runner 2049"]
+[:+ 104 :movie/year 2017]
+[:+ 104 :movie/director #ref 2]
+[:+ 104 :movie/cast #ref 13]
+
+; Example queries with predicates and aggregates:
+;
+; Movies after 2015:
+; [:find ?title ?year :where [?m :movie/title ?title] [?m :movie/year ?year] [(gt ?year 2015)]]
+;
+; Movies between 2010 and 2020:
+; [:find ?title ?year :where [?m :movie/title ?title] [?m :movie/year ?year] [(ge ?year 2010)] [(le ?year 2020)]]
+;
+; Count all movies:
+; [:find (count ?m) :where [?m :movie/title _]]
+;
+; Year stats:
+; [:find (min ?y) (max ?y) (avg ?y) :where [?m :movie/year ?y]]
+;
+; Count movies per director (run after getting director ID):
+; [:find (count ?m) :where [?m :movie/director #ref 1]]

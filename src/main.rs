@@ -10,15 +10,7 @@ pub mod store;
 pub mod txn;
 pub mod ulid;
 
-use differential_dataflow::input::Input;
-use differential_dataflow::operators::Threshold;
-use differential_dataflow::operators::iterate::Iterate;
-use differential_dataflow::operators::join::Join;
 use std::collections::HashMap;
-
-// ============================================================================
-// Core Types
-// ============================================================================
 
 /// Sentinel value for "no argument" in Expr
 const NIL: u32 = u32::MAX;
@@ -60,9 +52,9 @@ impl Term {
     }
 }
 
-// ============================================================================
-// Term Store
-// ============================================================================
+// ================================================================================================
+// TERM STORE =====================================================================================
+// ================================================================================================
 
 /// Arena for interned terms with symbol table
 #[derive(Clone, Debug, Default)]
@@ -241,377 +233,6 @@ impl TermStore {
     }
 }
 
-// ============================================================================
-// Unification
-// ============================================================================
-
-/// Occurs check
-fn occurs(store: &TermStore, var: u32, id: u32, subst: &[(u32, u32)]) -> bool {
-    let walked = store.walk(id, subst);
-    match store.get(walked) {
-        Term::Free(v) => v == var,
-        Term::Expr(_, args) => args
-            .iter()
-            .take_while(|&&a| a != NIL)
-            .any(|&a| occurs(store, var, a, subst)),
-        _ => false,
-    }
-}
-
-/// Unify two terms
-fn unify(store: &TermStore, u: u32, v: u32, subst: &[(u32, u32)]) -> Option<Vec<(u32, u32)>> {
-    let u = store.walk(u, subst);
-    let v = store.walk(v, subst);
-
-    if u == v {
-        return Some(vec![]);
-    }
-
-    match (store.get(u), store.get(v)) {
-        (Term::Free(var), _) => {
-            if occurs(store, var, v, subst) {
-                None
-            } else {
-                Some(vec![(var, v)])
-            }
-        }
-        (_, Term::Free(var)) => {
-            if occurs(store, var, u, subst) {
-                None
-            } else {
-                Some(vec![(var, u)])
-            }
-        }
-        (Term::Atom(a), Term::Atom(b)) if a == b => Some(vec![]),
-        (Term::Int(a), Term::Int(b)) if a == b => Some(vec![]),
-        (Term::Expr(head_lhs, args_lhs), Term::Expr(head_rhs, args_rhs))
-            if head_lhs == head_rhs =>
-        {
-            let mut result = Vec::new();
-            let mut ext_subst = subst.to_vec();
-            for (&lhs, &rhs) in args_lhs.iter().zip(args_rhs.iter()) {
-                if lhs == NIL && rhs == NIL {
-                    break;
-                }
-                if lhs == NIL || rhs == NIL {
-                    return None; // arity mismatch
-                }
-                let ext = unify(store, lhs, rhs, &ext_subst)?;
-                ext_subst.extend(ext.iter().cloned());
-                result.extend(ext);
-            }
-            Some(result)
-        }
-        _ => None,
-    }
-}
-
-// ============================================================================
-// Goal Combinators
-// ============================================================================
-
-type Subst = Vec<(u32, u32)>;
-type Stream = Vec<Subst>;
-type Goal<'a> = Box<dyn Fn(&TermStore, Subst) -> Stream + 'a>;
-
-fn eq(t1: u32, t2: u32) -> Goal<'static> {
-    Box::new(move |store, subst| {
-        if let Some(ext) = unify(store, t1, t2, &subst) {
-            let mut s = subst;
-            s.extend(ext);
-            vec![s]
-        } else {
-            vec![]
-        }
-    })
-}
-
-fn disj(goals: impl IntoIterator<Item = Goal<'static>>) -> Goal<'static> {
-    goals
-        .into_iter()
-        .reduce(|a, b| {
-            Box::new(move |store, subst| {
-                let mut r = a(store, subst.clone());
-                r.extend(b(store, subst));
-                r
-            })
-        })
-        .unwrap_or_else(|| Box::new(|_, _| vec![]))
-}
-
-fn conj(goals: impl IntoIterator<Item = Goal<'static>>) -> Goal<'static> {
-    goals
-        .into_iter()
-        .reduce(|a, b| {
-            Box::new(move |store, subst| {
-                a(store, subst)
-                    .into_iter()
-                    .flat_map(|s| b(store, s))
-                    .collect()
-            })
-        })
-        .unwrap_or_else(|| Box::new(|_, s| vec![s]))
-}
-
-// ============================================================================
-// Examples
-// ============================================================================
-
-fn run_simple_unification() {
-    println!("=== Simple Unification ===\n");
-
-    let mut store = TermStore::new();
-    let x = store.var();
-    let y = store.var();
-
-    // X = 5, Y = X
-    println!("Query: X = 5, Y = X");
-    let five = store.int(5);
-    let goal = conj([eq(x, five), eq(y, x)]);
-    for (i, s) in goal(&store, vec![]).iter().enumerate() {
-        println!(
-            "  Solution {}: X = {}, Y = {}",
-            i + 1,
-            store.display(x, s),
-            store.display(y, s)
-        );
-    }
-
-    // X = pair(1, Y), Y = 2
-    println!("\nQuery: X = pair(1, Y), Y = 2");
-    let one = store.int(1);
-    let two = store.int(2);
-    let pair = store.expr("pair", &[one, y]);
-    let goal = conj([eq(x, pair), eq(y, two)]);
-    for (i, s) in goal(&store, vec![]).iter().enumerate() {
-        println!(
-            "  Solution {}: X = {}, Y = {}",
-            i + 1,
-            store.display(x, s),
-            store.display(y, s)
-        );
-    }
-
-    // X = 1 OR X = 2 OR X = 3
-    println!("\nQuery: X = 1 OR X = 2 OR X = 3");
-    let one = store.int(1);
-    let two = store.int(2);
-    let three = store.int(3);
-    let goal = disj([eq(x, one), eq(x, two), eq(x, three)]);
-    for (i, s) in goal(&store, vec![]).iter().enumerate() {
-        println!("  Solution {}: X = {}", i + 1, store.display(x, s));
-    }
-}
-
-fn run_compound_goals() {
-    println!("\n=== Compound Goals ===\n");
-
-    let mut store = TermStore::new();
-    let x = store.var();
-    let y = store.var();
-    let z = store.var();
-
-    // (X = 1 OR X = 2) AND Y = X
-    println!("Query: (X = 1 OR X = 2) AND Y = X");
-    let one = store.int(1);
-    let two = store.int(2);
-    let goal = conj([disj([eq(x, one), eq(x, two)]), eq(y, x)]);
-    for (i, s) in goal(&store, vec![]).iter().enumerate() {
-        println!(
-            "  Solution {}: X = {}, Y = {}",
-            i + 1,
-            store.display(x, s),
-            store.display(y, s)
-        );
-    }
-
-    // X = [1, Y, 3], Y = 2
-    println!("\nQuery: X = [1, Y, 3], Y = 2");
-    let one = store.int(1);
-    let two = store.int(2);
-    let three = store.int(3);
-    let list = store.list(&[one, y, three]);
-    let goal = conj([eq(x, list), eq(y, two)]);
-    for (i, s) in goal(&store, vec![]).iter().enumerate() {
-        println!(
-            "  Solution {}: X = {}, Y = {}",
-            i + 1,
-            store.display(x, s),
-            store.display(y, s)
-        );
-    }
-
-    // X = pair(Y, Z), (Y=1,Z=2) OR (Y=3,Z=4)
-    println!("\nQuery: X = pair(Y, Z), (Y=1,Z=2) OR (Y=3,Z=4)");
-    let one = store.int(1);
-    let two = store.int(2);
-    let three = store.int(3);
-    let four = store.int(4);
-    let pair = store.expr("pair", &[y, z]);
-    let goal = conj([
-        eq(x, pair),
-        disj([
-            conj([eq(y, one), eq(z, two)]),
-            conj([eq(y, three), eq(z, four)]),
-        ]),
-    ]);
-    for (i, s) in goal(&store, vec![]).iter().enumerate() {
-        println!(
-            "  Solution {}: X = {}, Y = {}, Z = {}",
-            i + 1,
-            store.display(x, s),
-            store.display(y, s),
-            store.display(z, s)
-        );
-    }
-}
-
-fn run_ancestor_dataflow() {
-    println!("\n=== Ancestor with Differential Dataflow ===\n");
-
-    timely::execute_directly(|worker| {
-        let (mut input, probe) = worker.dataflow::<u64, _, _>(|scope| {
-            let (handle, parent) = scope.new_collection::<(String, String), _>();
-
-            let ancestor = parent.iterate(|inner| {
-                let parent = parent.enter(&inner.scope());
-                let base = parent.clone();
-                let recursive = parent
-                    .map(|(p, c)| (c, p))
-                    .join(&inner.map(|(a, d)| (a.clone(), d.clone())))
-                    .map(|(_, (gp, d))| (gp, d));
-                base.concat(&recursive).distinct()
-            });
-
-            let probe = ancestor.consolidate().probe();
-            ancestor.inspect(|((a, d), t, diff)| {
-                if *diff > 0 {
-                    println!("  [t={}] ancestor({}, {})", t, a, d);
-                } else {
-                    println!("  [t={}] RETRACT ancestor({}, {})", t, a, d);
-                }
-            });
-            (handle, probe)
-        });
-
-        println!("Adding: parent(alice,bob), parent(bob,carol), parent(carol,dave)");
-        input.insert(("alice".into(), "bob".into()));
-        input.insert(("bob".into(), "carol".into()));
-        input.insert(("carol".into(), "dave".into()));
-        input.advance_to(1);
-        input.flush();
-        while probe.less_than(input.time()) {
-            worker.step();
-        }
-
-        println!("\nAdding: parent(dave,eve)");
-        input.insert(("dave".into(), "eve".into()));
-        input.advance_to(2);
-        input.flush();
-        while probe.less_than(input.time()) {
-            worker.step();
-        }
-
-        println!("\nRemoving: parent(bob,carol)");
-        input.remove(("bob".into(), "carol".into()));
-        input.advance_to(3);
-        input.flush();
-        while probe.less_than(input.time()) {
-            worker.step();
-        }
-    });
-}
-
-fn run_path_finding() {
-    println!("\n=== Path Finding ===\n");
-
-    timely::execute_directly(|worker| {
-        let (mut input, probe) = worker.dataflow::<u64, _, _>(|scope| {
-            let (handle, edge) = scope.new_collection::<(String, String), _>();
-
-            let path = edge.iterate(|inner| {
-                let edge = edge.enter(&inner.scope());
-                let base = edge.clone();
-                let rec = edge
-                    .map(|(a, b)| (b, a))
-                    .join(&inner.map(|(x, y)| (x.clone(), y.clone())))
-                    .map(|(_, (from, to))| (from, to));
-                base.concat(&rec).distinct()
-            });
-
-            let from_a = path.filter(|(f, _)| f == "A");
-            let probe = from_a.consolidate().probe();
-            from_a.inspect(|((f, t), _, diff)| {
-                if *diff > 0 {
-                    println!("  path({}, {})", f, t);
-                }
-            });
-            (handle, probe)
-        });
-
-        println!("Graph: A->B, B->C, C->D, A->E, E->D\n\nPaths from A:");
-        input.insert(("A".into(), "B".into()));
-        input.insert(("B".into(), "C".into()));
-        input.insert(("C".into(), "D".into()));
-        input.insert(("A".into(), "E".into()));
-        input.insert(("E".into(), "D".into()));
-        input.advance_to(1);
-        input.flush();
-        while probe.less_than(input.time()) {
-            worker.step();
-        }
-    });
-}
-
-fn run_datalog_example() {
-    println!("\n=== Datalog-style Joins ===\n");
-
-    timely::execute_directly(|worker| {
-        let ((mut person, mut knows), probe) = worker.dataflow::<u64, _, _>(|scope| {
-            let (ph, person) = scope.new_collection::<(String, u32), _>();
-            let (kh, knows) = scope.new_collection::<(String, String), _>();
-
-            let person_knows = person
-                .map(|(n, a)| (n.clone(), (n, a)))
-                .join(&knows.map(|(p1, p2)| (p1.clone(), p2)))
-                .map(|(_, ((n, a), f))| (f, (n, a)));
-
-            let result = person_knows
-                .join(&person.map(|(n, a)| (n.clone(), a)))
-                .flat_map(
-                    |(f, ((n, an), af))| {
-                        if af > an { Some((n, f)) } else { None }
-                    },
-                );
-
-            let probe = result.consolidate().probe();
-            result.inspect(|((p, o), _, diff)| {
-                if *diff > 0 {
-                    println!("  {} knows {} who is older", p, o);
-                }
-            });
-            ((ph, kh), probe)
-        });
-
-        println!("Facts: person(alice,25), person(bob,30), person(carol,20)");
-        println!("       knows(alice,bob), knows(carol,alice)\n");
-
-        person.insert(("alice".into(), 25));
-        person.insert(("bob".into(), 30));
-        person.insert(("carol".into(), 20));
-        knows.insert(("alice".into(), "bob".into()));
-        knows.insert(("carol".into(), "alice".into()));
-
-        person.advance_to(1);
-        person.flush();
-        knows.advance_to(1);
-        knows.flush();
-        while probe.less_than(person.time()) {
-            worker.step();
-        }
-    });
-}
-
 fn format_binding(var_name: &str, value: &txn::Value, attrs: &attr::AttrStore) -> String {
     match value {
         txn::Value::Ref(id) => {
@@ -637,9 +258,9 @@ fn print_query_result(q: &query::Query, result: query::QueryResult, attrs: &attr
                         .iter()
                         .filter_map(|elem| {
                             if let query::FindElem::Var(var) = elem {
-                                bindings.get(var).map(|v| {
-                                    format_binding(q.var_name(*var), v, attrs)
-                                })
+                                bindings
+                                    .get(var)
+                                    .map(|v| format_binding(q.var_name(*var), v, attrs))
                             } else {
                                 None
                             }
@@ -671,23 +292,14 @@ fn main() -> miette::Result<()> {
     store::run(|store, worker| {
         let mut repl = repl::Repl::new();
 
-        repl.run(|line| {
+        if let Err(e) = repl.run(|line| {
             match line {
                 "quit" | "exit" => return false,
-                "demo" => {
-                    run_simple_unification();
-                    println!("\n{}\n", "─".repeat(60));
-                    run_compound_goals();
-                    println!("\n{}\n", "─".repeat(60));
-                    run_ancestor_dataflow();
-                    println!("\n{}\n", "─".repeat(60));
-                    run_path_finding();
-                    println!("\n{}\n", "─".repeat(60));
-                    run_datalog_example();
-                }
                 "dump" => {
                     for (e, a, v) in store.all_datoms() {
-                        let attr_name = store.attrs.get(a)
+                        let attr_name = store
+                            .attrs
+                            .get(a)
                             .map(|attr| format!(":{}", attr.ident))
                             .unwrap_or_else(|| a.to_string());
                         print!("[{} {} {}]\r\n", e, attr_name, v);
@@ -709,20 +321,32 @@ fn main() -> miette::Result<()> {
                                             match query::Query::from_edn(expr, &store.attrs) {
                                                 Ok(q) => {
                                                     let datoms = store.all_datoms();
-                                                    print_query_result(&q, q.execute(&datoms), &store.attrs);
+                                                    print_query_result(
+                                                        &q,
+                                                        q.execute(&datoms),
+                                                        &store.attrs,
+                                                    );
                                                 }
                                                 Err(e) => print!("query error: {}\r\n", e),
                                             }
                                         } else {
-                                            match txn::Transaction::from_edn(&[expr.clone()], &mut store.attrs) {
+                                            match txn::Transaction::from_edn(
+                                                &[expr.clone()],
+                                                &mut store.attrs,
+                                            ) {
                                                 Ok(txn) => {
                                                     store.transact(&txn, worker);
                                                     for (datom, diff) in txn.as_diffs() {
                                                         let op = if diff > 0 { "+" } else { "-" };
-                                                        let attr_name = store.attrs.get(datom.a)
+                                                        let attr_name = store
+                                                            .attrs
+                                                            .get(datom.a)
                                                             .map(|a| format!(":{}", a.ident))
                                                             .unwrap_or_else(|| datom.a.to_string());
-                                                        print!("{} [{} {} {}]\r\n", op, datom.e, attr_name, datom.v);
+                                                        print!(
+                                                            "{} [{} {} {}]\r\n",
+                                                            op, datom.e, attr_name, datom.v
+                                                        );
                                                     }
                                                 }
                                                 Err(e) => print!("error: {}\r\n", e),
@@ -757,10 +381,15 @@ fn main() -> miette::Result<()> {
                                     store.transact(&txn, worker);
                                     for (datom, diff) in txn.as_diffs() {
                                         let op = if diff > 0 { "+" } else { "-" };
-                                        let attr_name = store.attrs.get(datom.a)
+                                        let attr_name = store
+                                            .attrs
+                                            .get(datom.a)
                                             .map(|a| format!(":{}", a.ident))
                                             .unwrap_or_else(|| datom.a.to_string());
-                                        print!("{} [{} {} {}]\r\n", op, datom.e, attr_name, datom.v);
+                                        print!(
+                                            "{} [{} {} {}]\r\n",
+                                            op, datom.e, attr_name, datom.v
+                                        );
                                     }
                                 }
                                 Err(e) => print!("error: {}\r\n", e),
@@ -770,8 +399,9 @@ fn main() -> miette::Result<()> {
                 }
             }
             true
-        })
-        .expect("repl error");
+        }) {
+            eprintln!("error: {}", e);
+        }
     });
 
     Ok(())

@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 use crossterm::{
     cursor::{self, MoveLeft, MoveRight, MoveToColumn},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, EnableBracketedPaste, DisableBracketedPaste},
     execute,
     style::Print,
     terminal::{self, Clear, ClearType},
@@ -24,8 +24,16 @@ impl Repl {
     where
         F: FnMut(&str) -> bool,
     {
+        if !io::stdin().is_terminal() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "stdin is not a terminal - use eval command for non-interactive input",
+            ));
+        }
         terminal::enable_raw_mode()?;
+        let _ = execute!(io::stdout(), EnableBracketedPaste);
         let result = self.run_inner(&mut handler);
+        let _ = execute!(io::stdout(), DisableBracketedPaste);
         terminal::disable_raw_mode()?;
         result
     }
@@ -72,7 +80,24 @@ impl Repl {
         let mut saved_input = String::new();
 
         loop {
-            if let Event::Key(key) = event::read()? {
+            // Handle read errors gracefully (can happen during fast paste)
+            let event = match event::read() {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            // Handle paste events (bracketed paste mode)
+            if let Event::Paste(text) = event {
+                // Filter to first line only (no multiline paste)
+                let text = text.lines().next().unwrap_or("");
+                buf.insert_str(cursor_pos, text);
+                cursor_pos += text.len();
+                self.redraw_line(stdout, &buf, cursor_pos)?;
+                stdout.flush()?;
+                continue;
+            }
+
+            if let Event::Key(key) = event {
                 match key {
                     KeyEvent {
                         code: KeyCode::Enter,

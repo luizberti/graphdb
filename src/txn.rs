@@ -356,7 +356,7 @@ mod tests {
         // Lookup should work
         assert!(attrs.lookup("person/name").is_some());
         assert!(attrs.lookup("person/age").is_some());
-        assert_eq!(attrs.lookup("person/name").unwrap().ref_, name_id);
-        assert_eq!(attrs.lookup("person/age").unwrap().ref_, age_id);
+        assert_eq!(attrs.lookup("person/name").unwrap().id, name_id);
+        assert_eq!(attrs.lookup("person/age").unwrap().id, age_id);
     }
 }

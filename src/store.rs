@@ -21,11 +21,7 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn transact(
-        &mut self,
-        txn: &Transaction,
-        worker: &mut timely::worker::Worker<Alloc>,
-    ) {
+    pub fn transact(&mut self, txn: &Transaction, worker: &mut timely::worker::Worker<Alloc>) {
         for (datom, diff) in txn.as_diffs() {
             self.input.update((datom.e, datom.a, datom.v.clone()), diff);
         }

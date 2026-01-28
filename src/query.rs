@@ -27,7 +27,6 @@ pub struct Pattern {
     pub v: Bind<Value>,
 }
 
-// Comparison operators for predicates
 #[derive(Debug, Clone, Copy)]
 pub enum CmpOp {
     Ne, // not equal
@@ -51,7 +50,6 @@ pub struct Predicate {
     pub rhs: PredicateArg,
 }
 
-// Aggregate operations
 #[derive(Debug, Clone, Copy)]
 pub enum AggOp {
     Count,
@@ -195,7 +193,6 @@ impl Query {
             }
         }
 
-        // Check if we have any aggregates
         let has_aggregates = self.find.iter().any(|f| matches!(f, FindElem::Agg(_, _)));
 
         if has_aggregates {
@@ -362,7 +359,6 @@ fn parse_clause(
         }
     }
 
-    // Otherwise it's a pattern
     parse_pattern(edn, intern_var, attrs).map(Clause::Pattern)
 }
 
@@ -465,7 +461,7 @@ fn parse_id_binding(
             };
             attrs
                 .lookup(&ident)
-                .map(|a| Bind::Val(a.ref_))
+                .map(|a| Bind::Val(a.id))
                 .ok_or_else(|| format!("unknown attribute: :{}", ident))
         }
         EDN::Int(n) => Ok(Bind::Val(*n as u128)),
@@ -549,7 +545,6 @@ fn match_pattern(
 ) -> Option<Bindings> {
     let mut new_bindings = bindings.clone();
 
-    // Match entity
     match &pattern.e {
         Bind::Val(id) if *id != e => return None,
         Bind::Val(_) => {}
@@ -560,7 +555,6 @@ fn match_pattern(
         }
     }
 
-    // Match attribute
     match &pattern.a {
         Bind::Val(id) if *id != a => return None,
         Bind::Val(_) => {}
@@ -571,7 +565,6 @@ fn match_pattern(
         }
     }
 
-    // Match value
     match &pattern.v {
         Bind::Val(val) if val != v => return None,
         Bind::Val(_) => {}

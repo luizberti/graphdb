@@ -1,28 +1,26 @@
-//! Attribute definitions with schema metadata
-
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Attr {
-    pub ref_: u128,
+    pub id: u128,
     pub ident: String,
     pub variety: Variety,
     pub uniqueness: Uniqueness,
-    pub commutative: bool,
     pub cardinality: Cardinality,
+    pub commutative: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Variety {
     #[default]
-    Component,
     Identity,
+    Component,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Uniqueness {
-    Unique,
     #[default]
+    Unique,
     Common,
 }
 
@@ -45,59 +43,57 @@ impl Cardinality {
 
 pub struct AttrStore {
     attrs: Vec<Attr>,
-    ident_index: HashMap<String, u32>,
+    index: HashMap<String, u32>,
 }
 
 impl AttrStore {
     pub fn new() -> Self {
         Self {
             attrs: Vec::new(),
-            ident_index: HashMap::new(),
+            index: HashMap::new(),
         }
     }
 
     /// Get or create attr with default metadata, returns ref
     pub fn resolve(&mut self, ident: &str) -> u128 {
-        if let Some(&idx) = self.ident_index.get(ident) {
-            return self.attrs[idx as usize].ref_;
+        if let Some(&idx) = self.index.get(ident) {
+            return self.attrs[idx as usize].id;
         }
 
-        let ref_ = crate::ulid::id();
+        let id = crate::ulid::id();
         let attr = Attr {
-            ref_,
+            id,
             ident: ident.to_string(),
             variety: Variety::default(),
             uniqueness: Uniqueness::default(),
-            commutative: false,
             cardinality: Cardinality::default(),
+            commutative: false,
         };
 
         self.insert(attr);
-        ref_
+        id
     }
 
     /// Lookup by ident (read-only)
     pub fn lookup(&self, ident: &str) -> Option<&Attr> {
-        self.ident_index
-            .get(ident)
-            .map(|&idx| &self.attrs[idx as usize])
+        self.index.get(ident).map(|&idx| &self.attrs[idx as usize])
     }
 
     /// Lookup by ref (binary search)
     pub fn get(&self, ref_: u128) -> Option<&Attr> {
         self.attrs
-            .binary_search_by_key(&ref_, |a| a.ref_)
+            .binary_search_by_key(&ref_, |a| a.id)
             .ok()
             .map(|idx| &self.attrs[idx])
     }
 
     /// Define attr with custom metadata
     pub fn define(&mut self, attr: Attr) -> Result<(), String> {
-        if self.ident_index.contains_key(&attr.ident) {
+        if self.index.contains_key(&attr.ident) {
             return Err(format!("attribute already defined: {}", attr.ident));
         }
-        if self.get(attr.ref_).is_some() {
-            return Err(format!("ref already in use: {}", attr.ref_));
+        if self.get(attr.id).is_some() {
+            return Err(format!("ref already in use: {}", attr.id));
         }
         self.insert(attr);
         Ok(())
@@ -106,23 +102,23 @@ impl AttrStore {
     fn insert(&mut self, attr: Attr) {
         let pos = self
             .attrs
-            .binary_search_by_key(&attr.ref_, |a| a.ref_)
+            .binary_search_by_key(&attr.id, |a| a.id)
             .unwrap_or_else(|pos| pos);
 
         // Update indices for shifted elements
-        for idx in self.ident_index.values_mut() {
+        for idx in self.index.values_mut() {
             if *idx >= pos as u32 {
                 *idx += 1;
             }
         }
 
-        self.ident_index.insert(attr.ident.clone(), pos as u32);
+        self.index.insert(attr.ident.clone(), pos as u32);
         self.attrs.insert(pos, attr);
     }
 
     pub fn clear(&mut self) {
         self.attrs.clear();
-        self.ident_index.clear();
+        self.index.clear();
     }
 }
 

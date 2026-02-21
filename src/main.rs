@@ -1,6 +1,4 @@
-//! # MicroKanren with Differential Dataflow
-//! Terms are interned in a `TermStore` for efficient representation without
-//! pointer chasing. Uses compound terms with fixed-size argument arrays.
+//! # graphdb — EAV triplestore backed by Differential Dataflow
 
 pub mod attr;
 pub mod edn;
@@ -286,7 +284,7 @@ fn print_query_result(q: &query::Query, result: query::QueryResult, attrs: &attr
 
 fn main() -> miette::Result<()> {
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║        MicroKanren with Differential Dataflow            ║");
+    println!("║        Graph Database over Differential Dataflow         ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
     store::run(|store, worker| {

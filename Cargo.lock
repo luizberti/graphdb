@@ -956,6 +956,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
+name = "graphdb"
+version = "0.1.0"
+dependencies = [
+ "bao",
+ "blake3",
+ "clap",
+ "crossterm",
+ "differential-dataflow",
+ "differential-dogs3",
+ "duckdb",
+ "miette",
+ "serde",
+ "thiserror",
+ "timely",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1294,23 +1311,6 @@ checksum = "8c942ebf8e95485ca0d52d97da7c5a2c387d0e7f0ba4c35e93bfcaee045955b3"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "kanren"
-version = "0.1.0"
-dependencies = [
- "bao",
- "blake3",
- "clap",
- "crossterm",
- "differential-dataflow",
- "differential-dogs3",
- "duckdb",
- "miette",
- "serde",
- "thiserror",
- "timely",
 ]
 
 [[package]]
